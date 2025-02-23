@@ -9,11 +9,15 @@ set(Header_Files
     "AudioExporter.h"
     "BackgroundExporter.h"
     "BlobExporter.h"
+	"CKeyFrameExporter.h"
     "CollisionExporter.h"
     "command_macros_base.h"
     "CutsceneExporter.h"
     "DisplayListExporter.h"
     "Exporter.h"
+    "ExporterArchive.h"
+    "ExporterArchiveO2R.h"
+    "ExporterArchiveOTR.h"
     "Main.h"
     "MtxExporter.h"
     "PathExporter.h"
@@ -22,7 +26,9 @@ set(Header_Files
     "SkeletonExporter.h"
     "SkeletonLimbExporter.h"
     "TextExporter.h"
+    "TextMMExporter.h"
     "TextureExporter.h"
+    "TextureAnimationExporter.h"
     "VersionInfo.h"
     "VtxExporter.h"
     "z64cutscene.h"
@@ -37,9 +43,13 @@ set(Source_Files
     "BackgroundExporter.cpp"
     "BlobExporter.cpp"
     "CollisionExporter.cpp"
+	"CKeyFrameExporter.cpp"
     "CutsceneExporter.cpp"
     "DisplayListExporter.cpp"
     "Exporter.cpp"
+    "ExporterArchive.cpp"
+    "ExporterArchiveO2R.cpp"
+    "ExporterArchiveOTR.cpp"
     "Main.cpp"
     "MtxExporter.cpp"
     "PathExporter.cpp"
@@ -48,7 +58,9 @@ set(Source_Files
     "SkeletonExporter.cpp"
     "SkeletonLimbExporter.cpp"
     "TextExporter.cpp"
+    "TextMMExporter.cpp"
     "TextureExporter.cpp"
+    "TextureAnimationExporter.cpp"
     "VersionInfo.cpp"
     "VtxExporter.cpp"
 )
@@ -78,7 +90,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 		set_target_properties(${PROJECT_NAME} PROPERTIES
 			INTERPROCEDURAL_OPTIMIZATION_RELEASE "TRUE"
 		)
-	elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x86")
+	elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32")
 		set_target_properties(${PROJECT_NAME} PROPERTIES
 			INTERPROCEDURAL_OPTIMIZATION_RELEASE "TRUE"
 		)
@@ -89,7 +101,7 @@ endif()
 ################################################################################
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	get_property(MSVC_RUNTIME_LIBRARY_DEFAULT TARGET ${PROJECT_NAME} PROPERTY MSVC_RUNTIME_LIBRARY)
-	if("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x64")
+	if("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32" OR "${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x64")
 		string(CONCAT "MSVC_RUNTIME_LIBRARY_STR"
 			$<$<CONFIG:Debug>:
 				MultiThreadedDebug
@@ -116,11 +128,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 			">"
 			"_CONSOLE;"
 			"_CRT_SECURE_NO_WARNINGS;"
-			"UNICODE;"
-			"_UNICODE"
 			STORMLIB_NO_AUTO_LINK
 		)
-	elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x86")
+	elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32")
 		target_compile_definitions(${PROJECT_NAME} PRIVATE
 			"$<$<CONFIG:Debug>:"
 				"_DEBUG;"
@@ -131,8 +141,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 			">"
 			"WIN32;"
 			"_CONSOLE;"
-			"UNICODE;"
-			"_UNICODE"
 			STORMLIB_NO_AUTO_LINK
 		)
 	endif()
@@ -148,8 +156,6 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang|AppleClang")
 		">"
 		"_CONSOLE;"
 		"_CRT_SECURE_NO_WARNINGS;"
-		"UNICODE;"
-		"_UNICODE"
 	)
 endif()
 ################################################################################
@@ -163,20 +169,32 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/Mercury
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/tinyxml2
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/ZAPDUtils
-	${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/StormLib/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/spdlog/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/nlohmann-json/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/src/resource
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../soh/soh
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../mm/2s2h
 	.
 )
+
+find_package(nlohmann_json REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
+
+find_package(spdlog REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC spdlog::spdlog)
+
+FetchContent_Declare(
+    StormLib
+    GIT_REPOSITORY https://github.com/ladislav-zezula/StormLib.git
+    GIT_TAG v9.25
+)
+FetchContent_MakeAvailable(StormLib)
+target_include_directories(${PROJECT_NAME} PRIVATE ${stormlib_SOURCE_DIR}/src)
 
 if(MSVC)
     if("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x64")
         target_compile_options(${PROJECT_NAME} PRIVATE
+		    $<$<CONFIG:Debug>:
+            /Od;
+            /Oi-
+			>
             $<$<CONFIG:Release>:
                 /Oi;
                 /Gy
@@ -187,9 +205,13 @@ if(MSVC)
             ${DEFAULT_CXX_DEBUG_INFORMATION_FORMAT};
             ${DEFAULT_CXX_EXCEPTION_HANDLING}
         )
-    elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x86")
+    elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32")
         target_compile_options(${PROJECT_NAME} PRIVATE
-            $<$<CONFIG:Release>:
+            $<$<CONFIG:Debug>:
+            /Od;
+            /Oi-
+			>
+			$<$<CONFIG:Release>:
                 /Oi;
                 /Gy
             >
@@ -208,7 +230,7 @@ if(MSVC)
             >
             /SUBSYSTEM:CONSOLE
         )
-    elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "x86")
+    elseif("${CMAKE_VS_PLATFORM_NAME}" STREQUAL "Win32")
         target_link_options(${PROJECT_NAME} PRIVATE
             $<$<CONFIG:Release>:
                 /DEBUG;
@@ -233,6 +255,9 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang|AppleClang")
         $<$<COMPILE_LANGUAGE:CXX>:-Wno-deprecated-enum-enum-conversion>
 	)
 endif()
+
+target_compile_definitions(${PROJECT_NAME} PUBLIC -DF3DEX_GBI_2)
+
 ################################################################################
 # Dependencies
 ################################################################################
@@ -242,4 +267,3 @@ add_dependencies(${PROJECT_NAME}
 
 # Link with other targets.
 target_link_libraries(${PROJECT_NAME} PUBLIC "${ADDITIONAL_LIBRARY_DEPENDENCIES}")
-

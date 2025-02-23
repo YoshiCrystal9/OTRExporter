@@ -1,24 +1,41 @@
 #include "AnimationExporter.h"
 #include <resource/type/Animation.h>
+#include <Globals.h>
+#include "DisplayListExporter.h"
+#undef FindResource
+
 
 void OTRExporter_Animation::Save(ZResource* res, const fs::path& outPath, BinaryWriter* writer)
 {
 	ZAnimation* anim = (ZAnimation*)res;
 
-	WriteHeader(res, outPath, writer, LUS::ResourceType::SOH_Animation);
+	WriteHeader(res, outPath, writer, static_cast<uint32_t>(SOH::ResourceType::SOH_Animation));
 
 	ZNormalAnimation* normalAnim = dynamic_cast<ZNormalAnimation*>(anim);
 	ZCurveAnimation* curveAnim = dynamic_cast<ZCurveAnimation*>(anim);
 	ZLinkAnimation* linkAnim = dynamic_cast<ZLinkAnimation*>(anim);
 	if (linkAnim != nullptr)
 	{
-		writer->Write((uint32_t)LUS::AnimationType::Link);
+		writer->Write((uint32_t)SOH::AnimationType::Link);
 		writer->Write((uint16_t)linkAnim->frameCount);
-		writer->Write((uint32_t)linkAnim->segmentAddress);
+		std::string name;
+		bool found = Globals::Instance->GetSegmentedPtrName((linkAnim->segmentAddress), res->parent, "", name, res->parent->workerID);
+		if (found)
+		{
+			if (name.at(0) == '&')
+				name.erase(0, 1);
+
+			writer->Write(StringHelper::Sprintf("__OTR__misc/link_animetion/%s", name.c_str()));
+		}
+		else
+		{
+			writer->Write("");
+		}
+		//writer->Write((uint32_t)linkAnim->segmentAddress);
 	}
 	else if (curveAnim != nullptr)
 	{
-		writer->Write((uint32_t)LUS::AnimationType::Curve);
+		writer->Write((uint32_t)SOH::AnimationType::Curve);
 		writer->Write((uint16_t)curveAnim->frameCount);
 
 		writer->Write((uint32_t)curveAnim->refIndexArr.size());
@@ -44,7 +61,7 @@ void OTRExporter_Animation::Save(ZResource* res, const fs::path& outPath, Binary
 	}
 	else if (normalAnim != nullptr)
 	{
-		writer->Write((uint32_t)LUS::AnimationType::Normal);
+		writer->Write((uint32_t)SOH::AnimationType::Normal);
 		writer->Write((uint16_t)normalAnim->frameCount);
 
 		writer->Write((uint32_t)normalAnim->rotationValues.size());
@@ -65,6 +82,6 @@ void OTRExporter_Animation::Save(ZResource* res, const fs::path& outPath, Binary
 	}
 	else
 	{
-		writer->Write((uint32_t)LUS::AnimationType::Legacy);
+		writer->Write((uint32_t)SOH::AnimationType::Legacy);
 	}
 }

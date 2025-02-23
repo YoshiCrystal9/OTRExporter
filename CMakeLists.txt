@@ -2,8 +2,7 @@ cmake_minimum_required(VERSION 3.16.0 FATAL_ERROR)
 
 set(CMAKE_SYSTEM_VERSION 10.0 CACHE STRING "" FORCE)
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "The C++ standard to use")
-#set(CMAKE_C_STANDARD 11 CACHE STRING "The C standard to use")
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 11 CACHE STRING "The C standard to use")
 
 project(OTRExporter C CXX)
 
@@ -87,10 +86,6 @@ endif()
 
 if (NOT TARGET ZAPD)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ZAPDTR/ZAPD ${CMAKE_BINARY_DIR}/ZAPD)
-endif()
-
-if (NOT TARGET ZAPDUtils)
-    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../libultraship/extern/ZAPDUtils ${CMAKE_BINARY_DIR}/ZAPDUtils)
 endif()
 
 add_subdirectory(OTRExporter)

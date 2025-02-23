@@ -3,16 +3,17 @@
 #include "../ZAPD/ZFile.h"
 #include <Utils/MemoryStream.h>
 #include <Utils/BitConverter.h>
-#include "StrHash64/StrHash64.h"
+#include <utils/StrHash64.h>
 #include "spdlog/spdlog.h"
 #include <libultraship/libultra/gbi.h>
 #include <Globals.h>
 #include <iostream>
+#include <regex>
 #include <string>
 #include "MtxExporter.h"
 #include <Utils/DiskFile.h>
 #include "VersionInfo.h"
-
+#undef FindResource
 
 #define GFX_SIZE 8
 
@@ -45,13 +46,16 @@
 {    (_SHIFTL(G_TEXRECT, 24, 8) | _SHIFTL(xh, 12, 12) | _SHIFTL(yh, 0, 12)),\
     (_SHIFTL(tile, 24, 3) | _SHIFTL(xl, 12, 12) | _SHIFTL(yl, 0, 12)) }
 
+#define UCODE_F3DEX2 (int8_t) 4
+
 void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, BinaryWriter* writer)
 {
 	ZDisplayList* dList = (ZDisplayList*)res;
 
 	//printf("Exporting DList %s\n", dList->GetName().c_str());
 
-	WriteHeader(res, outPath, writer, LUS::ResourceType::DisplayList);
+	WriteHeader(res, outPath, writer, static_cast<uint32_t>(Fast::ResourceType::DisplayList));
+	writer->Write(UCODE_F3DEX2);
 
 	while (writer->GetBaseAddress() % 8 != 0)
 		writer->Write((uint8_t)0xFF);
@@ -66,6 +70,7 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 	writer->Write((uint32_t)(hash & 0xFFFFFFFF));
 
 	auto dlStart = std::chrono::steady_clock::now();
+	uint8_t lastOpCode;
 
 	//for (auto data : dList->instructions)
 	for (size_t dataIdx = 0; dataIdx < dList->instructions.size(); dataIdx++)
@@ -236,6 +241,24 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 
 					word0 = hash >> 32;
 					word1 = hash & 0xFFFFFFFF;
+
+					// Write the Matrix
+					for (ZMtx mtx : dList->mtxList)
+					{
+						if (mtx.GetRawDataIndex() == mtxDecl->address)
+						{
+							MemoryStream* mtxStream = new MemoryStream();
+							BinaryWriter mtxWriter = BinaryWriter(mtxStream);
+
+							OTRExporter_MtxExporter mtxExporter;
+
+							//printf("Adding MTX %s\n", vName.c_str());
+
+							mtxExporter.Save(&mtx, "", &mtxWriter);
+							AddFile(vName, mtxStream->ToVector());
+							break;
+						}
+					}
 				}
 				else
 				{
@@ -253,6 +276,12 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 			int32_t i = (data & 0x000000000F000000) >> 24;
 			int32_t xxx = (data & 0x0000000000FFF000) >> 12;
 			int32_t ddd = (data & 0x0000000000000FFF);
+
+			// gSunDL Textures are rendered as i8 instead of i4
+			if (res->GetName() == "gSunDL" && ttt != G_TX_LOADTILE)
+			{
+				xxx = (xxx+1)/2-1;
+			}
 
 			Gfx value = {gsDPLoadBlock(i, sss, ttt, xxx, ddd)};
 			word0 = value.words.w0;
@@ -343,9 +372,24 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 			}
 			else
 			{
-				word0 = 0;
-				word1 = 0;
-				spdlog::error(StringHelper::Sprintf("dListDecl == nullptr! Addr = {:08X}", GETSEGOFFSET(data)));
+				// If we can't find the display list in this file, try looking in other files based on the segment number
+				uint32_t seg = data2 & 0xFFFFFFFF;
+				std::string resourceName = "";
+				bool foundDecl = Globals::Instance->GetSegmentedPtrName(seg, dList->parent, "", resourceName, res->parent->workerID);
+				if (foundDecl) {
+					ZFile* assocFile = Globals::Instance->GetSegment(GETSEGNUM(seg), res->parent->workerID);
+					std::string assocFileName = assocFile->GetName();
+					std::string fName = GetPathToRes(assocFile->resources[0], resourceName.c_str());
+
+					uint64_t hash = CRC64(fName.c_str());
+
+					word0 = hash >> 32;
+					word1 = hash & 0xFFFFFFFF;
+				} else {
+					word0 = 0;
+					word1 = 0;
+					spdlog::error(StringHelper::Sprintf("dListDecl == nullptr! Addr = {:08X}", GETSEGOFFSET(data2)));
+				}
 			}
 
 			for (size_t i = 0; i < dList->otherDLists.size(); i++)
@@ -387,12 +431,28 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 
 				Gfx value;
 
-				u32 dListVal = (data & 0x0FFFFFFF) + 1;
+				u32 segNum = GETSEGNUM(data);
+				u32 segOffset = GETSEGOFFSET(data);
 
-				if (pp != 0)
-					value = {gsSPBranchList(dListVal)};
-				else
-					value = {gsSPDisplayList(dListVal)};
+				// Use regular DL opcode for 0 offsets
+				if (segOffset == 0) {
+					u32 dListVal = (data & 0x0FFFFFFF) + 1;
+
+					if (pp != 0)
+						value = {gsSPBranchList(dListVal)};
+					else
+						value = {gsSPDisplayList(dListVal)};
+				} else {
+					// Convert the offset value to an index value by diving by the original size for Gfx on hardware
+					// Adding 1 for seg addr flow will be handled on the renderer side
+					u32 dListVal = (segNum << 24) | (segOffset / (sizeof(u32) * 2));
+
+					if (pp != 0)
+						value = {gsSPBranchListIndex(dListVal)};
+					else
+						value = {gsSPDisplayListIndex(dListVal)};
+				}
+
 
 				word0 = value.words.w0;
 				word1 = value.words.w1;
@@ -429,9 +489,24 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 				}
 				else
 				{
-					word0 = 0;
-					word1 = 0;
-					spdlog::error(StringHelper::Sprintf("dListDecl == nullptr! Addr = {:08X}", GETSEGOFFSET(data)));
+					// If we can't find the display list in this file, try looking in other files based on the segment number
+					uint32_t seg = data & 0xFFFFFFFF;
+					std::string resourceName = "";
+					bool foundDecl = Globals::Instance->GetSegmentedPtrName(seg, dList->parent, "", resourceName, res->parent->workerID);
+					if (foundDecl) {
+						ZFile* assocFile = Globals::Instance->GetSegment(GETSEGNUM(seg), res->parent->workerID);
+						std::string assocFileName = assocFile->GetName();
+						std::string fName = GetPathToRes(assocFile->resources[0], resourceName.c_str());
+
+						uint64_t hash = CRC64(fName.c_str());
+
+						word0 = hash >> 32;
+						word1 = hash & 0xFFFFFFFF;
+					} else {
+						word0 = 0;
+						word1 = 0;
+						spdlog::error(StringHelper::Sprintf("dListDecl == nullptr! Addr = {:08X}", GETSEGOFFSET(data)));
+					}
 				}
 
 				for (size_t i = 0; i < dList->otherDLists.size(); i++)
@@ -584,6 +659,12 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 			int32_t bbbb = (data & 0b0000000000000000000000000000000000000000000000000000000011110000) >> 4;
 			int32_t uuuu = (data & 0b0000000000000000000000000000000000000000000000000000000000001111);
 
+			// gSunDL Textures are rendered as i8 instead of i4
+			if (res->GetName() == "gSunDL" && ttt != G_TX_LOADTILE)
+			{
+				ii = G_IM_SIZ_4b;
+			}
+
 			Gfx value = {gsDPSetTile(fff, ii, nnnnnnnnn, mmmmmmmmm, ttt, pppp, cc, aaaa, ssss, dd, bbbb, uuuu)};
 			word0 = value.words.w0;
 			word1 = value.words.w1;
@@ -676,9 +757,6 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 			}
 			else
 			{
-				std::string texName = "";
-				bool foundDecl = Globals::Instance->GetSegmentedPtrName(seg, dList->parent, "", texName, res->parent->workerID);
-
 				int32_t __ = (data & 0x00FF000000000000) >> 48;
 				int32_t www = (data & 0x00000FFF00000000) >> 32;
 
@@ -694,18 +772,35 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 				writer->Write(word0);
 				writer->Write(word1);
 
+				bool foundDecl = false;
+				std::string resourcePath = "";
+
+				// First check current file
+				if (res->parent->segment == GETSEGNUM(seg)) {
+					uint32_t segmentOffset = GETSEGOFFSET(seg);
+					Declaration* resourceDecl = dList->parent->GetDeclaration(segmentOffset);
+
+					if (resourceDecl != nullptr)
+					{
+						foundDecl = true;
+						resourcePath = OTRExporter_DisplayList::GetPathToRes(res, resourceDecl->declName);
+					}
+				}
+
+				// Then check in global resources
+				if (!foundDecl) {
+					foundDecl = Globals::Instance->GetSegmentedPtrName(seg, dList->parent, "", resourcePath, res->parent->workerID);
+
+					if (foundDecl) {
+						ZFile* assocFile = Globals::Instance->GetSegment(GETSEGNUM(seg), res->parent->workerID);
+						std::string assocFileName = assocFile->GetName();
+						resourcePath = GetPathToRes(assocFile->resources[0], resourcePath);
+					}
+				}
+
 				if (foundDecl)
 				{
-					ZFile* assocFile = Globals::Instance->GetSegment(GETSEGNUM(seg), res->parent->workerID);
-					std::string assocFileName = assocFile->GetName();
-					std::string fName = "";
-
-					if (GETSEGNUM(seg) == SEGMENT_SCENE || GETSEGNUM(seg) == SEGMENT_ROOM)
-						fName = GetPathToRes(res, texName.c_str());
-					else
-						fName = GetPathToRes(assocFile->resources[0], texName.c_str());
-
-					uint64_t hash = CRC64(fName.c_str());
+					uint64_t hash = CRC64(resourcePath.c_str());
 
 					word0 = hash >> 32;
 					word1 = hash & 0xFFFFFFFF;
@@ -721,17 +816,15 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 		break;
 		case G_VTX:
 		{
-			if (GETSEGNUM(data) == 0xC || GETSEGNUM(data) == 0x8)
+			if (!Globals::Instance->HasSegment(GETSEGNUM(data), res->parent->workerID))
 			{
-				// hack for dynamic verticies used in en_ganon_mant and en_jsjutan
-				// TODO is there a better way?
 				int32_t aa = (data & 0x000000FF00000000ULL) >> 32;
 				int32_t nn = (data & 0x000FF00000000000ULL) >> 44;
 
-				Gfx value = {gsSPVertex(data & 0xFFFFFFFF, nn, ((aa >> 1) - nn))};
+				Gfx value = {gsSPVertex((data & 0xFFFFFFFF) + 1, nn, ((aa >> 1) - nn))};
 
 				word0 = value.words.w0;
-				word1 = value.words.w1 | 1;
+				word1 = value.words.w1;
 			}
 			else
 			{
@@ -746,6 +839,22 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 
 				int32_t aa = (data & 0x000000FF00000000ULL) >> 32;
 				int32_t nn = (data & 0x000FF00000000000ULL) >> 44;
+				bool isSegmentedPtr = false;
+				std::string fName = "";
+
+				// If we can't find the display list in this file, try looking in other files based on the segment number
+				if (vtxDecl == nullptr) {
+					uint32_t seg = data & 0xFFFFFFFF;
+					std::string resourceName = "";
+					isSegmentedPtr = Globals::Instance->GetSegmentedPtrName(seg, dList->parent, "", resourceName, res->parent->workerID);
+
+					if (isSegmentedPtr) {
+						ZFile* assocFile = Globals::Instance->GetSegment(GETSEGNUM(seg), res->parent->workerID);
+						std::string assocFileName = assocFile->GetName();
+						fName = GetPathToRes(assocFile->resources[0], resourceName.c_str());
+						vtxDecl = assocFile->GetDeclarationRanged(segOffset);
+					}
+				}
 
 				if (vtxDecl != nullptr && vtxDecl->declName != "Gfx")
 				{
@@ -761,7 +870,9 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 					writer->Write(word0);
 					writer->Write(word1);
 
-					std::string fName = OTRExporter_DisplayList::GetPathToRes(res, vtxDecl->declName);
+					if (!isSegmentedPtr) {
+						fName = OTRExporter_DisplayList::GetPathToRes(res, vtxDecl->declName);
+					}
 
 					uint64_t hash = CRC64(fName.c_str());
 
@@ -787,7 +898,7 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 						}
 
 						// OTRTODO: Once we aren't relying on text representations, we should call ArrayExporter...
-						OTRExporter::WriteHeader(nullptr, "", &vtxWriter, LUS::ResourceType::Array);
+						OTRExporter::WriteHeader(nullptr, "", &vtxWriter, static_cast<uint32_t>(SOH::ResourceType::SOH_Array));
 
 						vtxWriter.Write((uint32_t)ZResourceType::Vertex);
 						vtxWriter.Write((uint32_t)arrCnt);
@@ -836,6 +947,13 @@ void OTRExporter_DisplayList::Save(ZResource* res, const fs::path& outPath, Bina
 
 		writer->Write(word0);
 		writer->Write(word1);
+		lastOpCode = opcode;
+	}
+
+	if (lastOpCode != G_ENDDL) {
+		Gfx value = { gsSPEndDisplayList() };
+		writer->Write((uint32_t)value.words.w0);
+		writer->Write((uint32_t)value.words.w1);
 	}
 
 	auto dlEnd = std::chrono::steady_clock::now();
@@ -868,7 +986,10 @@ std::string OTRExporter_DisplayList::GetParentFolderName(ZResource* res)
 	}
 	else if (StringHelper::Contains(oName, "_room"))
 	{
-		oName = StringHelper::Split(oName, "_room")[0] + "_scene";
+		if (Globals::Instance->game != ZGame::MM_RETAIL)
+			oName = StringHelper::Split(oName, "_room")[0] + "_scene";
+		else
+			oName = StringHelper::Split(oName, "_room")[0];
 	}
 
 	if (prefix != "")
@@ -882,8 +1003,8 @@ std::string OTRExporter_DisplayList::GetPrefix(ZResource* res)
 	std::string oName = res->parent->GetOutName();
 	std::string prefix = "";
 	std::string xmlPath = StringHelper::Replace(res->parent->GetXmlFilePath().string(), "\\", "/");
-
-	if (StringHelper::Contains(oName, "_scene") || StringHelper::Contains(oName, "_room")) {
+	// BENTODO bring in the existing OTRExporter changes from SoHs
+	if (StringHelper::Contains(oName, "_scene") || StringHelper::Contains(oName, "_room") || (StringHelper::Contains(res->parent->GetXmlFilePath().string(), "/scenes/") || StringHelper::Contains(res->parent->GetXmlFilePath().string(), "\\scenes\\"))) {
 		prefix = "scenes";
         if (Globals::Instance->rom->IsMQ()) {
             prefix += "/mq";
