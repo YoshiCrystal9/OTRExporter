@@ -169,6 +169,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern
+	${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/extern/spdlog/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../libultraship/src/resource
     ${CMAKE_CURRENT_SOURCE_DIR}/../../mm/2s2h
 	.
@@ -176,9 +177,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 find_package(nlohmann_json REQUIRED)
 target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
-
-find_package(spdlog REQUIRED)
-target_link_libraries(${PROJECT_NAME} PUBLIC spdlog::spdlog)
 
 FetchContent_Declare(
     StormLib
